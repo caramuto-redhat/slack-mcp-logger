@@ -3,6 +3,7 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 import re
+from pathlib import Path
 
 SLACK_API_BASE = "https://slack.com/api"
 MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
@@ -59,6 +60,75 @@ def convert_thread_ts(ts: str) -> str:
     if re.match(r"^\d{16}$", ts):
         return f"{ts[:10]}.{ts[10:]}"
     return ""
+
+
+@mcp.tool()
+async def get_server_logs(log_file_path: str, lines: int = 50) -> str:
+    """Read recent logs from MCP server log files.
+    
+    Args:
+        log_file_path: Path to log file (e.g., 'logs/pipeline_bot.log')
+        lines: Number of recent lines to read (default: 50)
+    
+    Returns:
+        String containing the recent log lines
+    """
+    await log_to_slack(f"Reading {lines} lines from log file: {log_file_path}")
+    
+    try:
+        # Security: Resolve path and ensure it's within allowed directories
+        log_path = Path(log_file_path).resolve()
+        
+        # Optional: Restrict to specific directories (uncomment if needed)
+        # allowed_dirs = [Path("logs").resolve(), Path("/var/log").resolve()]
+        # if not any(str(log_path).startswith(str(allowed_dir)) for allowed_dir in allowed_dirs):
+        #     return f"Error: Access denied to {log_file_path}"
+        
+        if not log_path.exists():
+            return f"Error: Log file not found: {log_file_path}"
+        
+        if not log_path.is_file():
+            return f"Error: Path is not a file: {log_file_path}"
+        
+        # Read the last N lines efficiently
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as file:
+            # For large files, read from end
+            if log_path.stat().st_size > 1024 * 1024:  # 1MB
+                # Use tail-like approach for large files
+                file.seek(0, 2)  # Go to end
+                file_size = file.tell()
+                
+                # Estimate bytes to read (roughly 100 chars per line)
+                bytes_to_read = min(lines * 100, file_size)
+                file.seek(max(0, file_size - bytes_to_read))
+                
+                # Read and split into lines
+                content = file.read()
+                all_lines = content.split('\n')
+                recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            else:
+                # For small files, read all and take last N lines
+                all_lines = file.readlines()
+                recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        
+        # Clean up lines and format
+        cleaned_lines = [line.rstrip() for line in recent_lines if line.strip()]
+        
+        if not cleaned_lines:
+            return f"Log file is empty: {log_file_path}"
+        
+        # Format with metadata
+        result = f"📄 **{log_file_path}** (last {len(cleaned_lines)} lines):\n"
+        result += "```\n"
+        result += "\n".join(cleaned_lines)
+        result += "\n```"
+        
+        return result
+        
+    except PermissionError:
+        return f"Error: Permission denied reading {log_file_path}"
+    except Exception as e:
+        return f"Error reading log file: {str(e)}"
 
 
 @mcp.tool()
